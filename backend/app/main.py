@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from app.api.routes import router as api_router
 from app.core.config import ensure_runtime_dirs
 
-app = FastAPI(title="MindVault API", version="0.1.0")
+app = FastAPI(title="MindVault API", version="0.1.1")
 
 
 @app.on_event("startup")
