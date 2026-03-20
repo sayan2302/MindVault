@@ -5,6 +5,11 @@ from app.core.config import settings
 from app.rag.loaders import load_documents_from_file
 from app.rag.chunking import chunk_documents
 from app.rag.embeddings import embed_documents, embed_query_text
+from app.rag.vector_store import index_chunks, retrieve_similar_chunks_with_scores
+
+from app.rag.prompting import build_rag_prompt
+from app.rag.llm import generate_answer
+from app.rag.vector_store import retrieve_similar_chunks
 
 router = APIRouter()
 
@@ -192,4 +197,108 @@ def embed_query(query: str = Query(..., min_length=1)) -> dict[str, object]:
         "query": query,
         "embedding_dimension": len(vector),
         "vector_preview": vector[:8],
+    }
+
+@router.post("/index/{stored_filename}")
+def index_uploaded_file(stored_filename: str) -> dict[str, object]:
+    file_path = Path(settings.upload_dir) / stored_filename
+
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found: {stored_filename}",
+        )
+
+    try:
+        docs = load_documents_from_file(file_path)
+        chunks = chunk_documents(docs)
+        result = index_chunks(chunks)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Indexing failed: {exc}",
+        ) from exc
+
+    return {
+        "message": "Indexing successful",
+        "stored_filename": stored_filename,
+        "documents_loaded": len(docs),
+        "chunks_created": len(chunks),
+        "indexed_count": result["indexed_count"],
+        "collection": "mindvault_docs",
+        "persist_directory": settings.chroma_dir,
+    }
+
+
+@router.get("/retrieve")
+def retrieve_chunks(
+    query: str = Query(..., min_length=1),
+    k: int = Query(default=settings.retrieval_top_k, ge=1, le=20),
+) -> dict[str, object]:
+    try:
+        results = retrieve_similar_chunks_with_scores(query=query, k=k)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Retrieval failed: {exc}",
+        ) from exc
+
+    response_items: list[dict[str, object]] = []
+    for rank, (doc, score) in enumerate(results, start=1):
+        response_items.append(
+            {
+                "rank": rank,
+                "score": score,
+                "source_file": doc.metadata.get("source_file"),
+                "chunk_index": doc.metadata.get("chunk_index"),
+                "preview": doc.page_content[:220],
+                "metadata": doc.metadata,
+            }
+        )
+
+    return {
+        "query": query,
+        "top_k": k,
+        "results_count": len(response_items),
+        "results": response_items,
+    }
+
+
+
+@router.get("/rag-answer")
+def rag_answer(
+    query: str = Query(..., min_length=1),
+    k: int = Query(default=settings.retrieval_top_k, ge=1, le=20),
+) -> dict[str, object]:
+    try:
+        docs = retrieve_similar_chunks(query=query, k=k)
+        prompt = build_rag_prompt(user_query=query, docs=docs)
+        answer = generate_answer(prompt)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"RAG answer generation failed: {exc}",
+        ) from exc
+
+    sources: list[dict[str, object]] = []
+    for i, doc in enumerate(docs, start=1):
+        sources.append(
+            {
+                "source_no": i,
+                "source_file": doc.metadata.get("source_file"),
+                "chunk_index": doc.metadata.get("chunk_index"),
+                "preview": doc.page_content[:180],
+            }
+        )
+
+    return {
+        "query": query,
+        "top_k": k,
+        "answer": answer,
+        "sources": sources,
     }
