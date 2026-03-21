@@ -10,6 +10,8 @@ from app.rag.vector_store import index_chunks, retrieve_similar_chunks_with_scor
 from app.rag.prompting import build_rag_prompt
 from app.rag.llm import generate_answer
 from app.rag.vector_store import retrieve_similar_chunks
+from app.api.schemas import ChatRequest, ChatResponse
+from app.rag.pipeline import run_rag_pipeline
 
 router = APIRouter()
 
@@ -302,3 +304,18 @@ def rag_answer(
         "answer": answer,
         "sources": sources,
     }
+
+@router.post("/chat", response_model=ChatResponse)
+def chat(payload: ChatRequest) -> ChatResponse:
+    try:
+        return run_rag_pipeline(query=payload.query, top_k=payload.top_k)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat pipeline failed: {exc}",
+        ) from exc
